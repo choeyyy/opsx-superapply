@@ -1,4 +1,4 @@
-# TDD&SDD应用：AI开发工作流的融合与插件化
+﻿# TDD&SDD应用：AI开发工作流的融合与插件化
 
 **做了什么：参考现有openspec框架，规范、强化ai开发工作流，作为cursor插件（在IDE中使用命令/opsx superapply）使用。**
 项目地址：[choeyyy/opsx-superapply](https://github.com/choeyyy/opsx-superapply)
@@ -290,29 +290,44 @@ superpowers 属于 skill + hook 型：14 个 skill 文件 + 1 个 sessionStart h
 
 ### 2.2 融合：自定义opsx-superapply
 
-#### 2.2.1 开发路径选择
+#### 2.2.1 开发路径选择（V2 — 并行+校验）
 
-已知openspec一条命令有对应的skill。如果要在本地openspec的基础上扩充功能，比如扩充一条命令，需要找到本地路径。在2.1.2 openspec 源码结构有提到大致的路径，在此路径新建文件夹：
+在本地openspec的基础上扩充两个skill，安装路径：
 
- `C:\Users\你的名字\.cursor\skills\opsx-superapply\`
+`C:\Users\你的名字\.cursor\skills\`
 
 ```
+opsx-superpropose/
+└── SKILL.md                     ← 增强版propose，tasks按capability分组
+
 opsx-superapply/
-├── SKILL.md                     ← 主编排器（146行）
+├── SKILL.md                     ← 并行编排器
 ├── implementer-prompt.md        ← 实现子agent提示词模板
 ├── spec-reviewer-prompt.md      ← 规格审查子agent模板
-└── quality-reviewer-prompt.md   ← 代码质量审查子agent模板
+└── quality-reviewer-prompt.md   ← 集成质量审查模板
 ```
 
-它的执行流程是这样的：用户输入 `/opsx-superapply`（或在对话中触发），skill 先通过 `openspec status` 和 `openspec instructions apply` 两条 CLI 命令拿到当前 change 的状态和上下文（proposal、spec、design 这些 openspec 产出的文件），然后解析 tasks.md 里的任务列表，对每个未完成的任务走 superpowers 式的三步循环：派出实现子 agent → 派出规格审查子 agent → 派出质量审查子 agent，全部通过后把 tasks.md 里的 checkbox 勾上，继续下一个任务。如果超过 3 个任务，全部做完后还会对整个 git 范围做一次集成审查。
+**V2 执行流程**：用户先运行 `/opsx-superpropose` 生成带分组的tasks.md（用 `###` headers按capability分组，header名对应specs/下的文件夹名）。然后运行 `/opsx-superapply`，编排器读取specs确定哪些组可并行（文件作用域无交集的组可同时执行），对每个capability组派出一个实现子agent（该子agent内部按顺序完成组内所有tasks），完成后派spec-review子agent对照该组的spec.md逐条验证，全部组完成后做一次集成质量审查。
 
-#### 2.2.2 参考和开发
+**与V1的关键区别**：
+- V1逐条派子agent（串行），V2按capability组派（可并行）
+- V1每条task做3次review（太贵），V2每组1次spec-review + 最后1次集成review
+- V1子agent间完全隔离导致丢信息，V2同组内由同一子agent连续做（保持上下文）
+- V2新增superpropose来生成分组tasks，不依赖superapply运行时分析依赖
 
-**上游来自 openspec 的部分**：任务列表来自 openspec 的 `tasks.md`（SDD 的产物），实现子 agent 收到的上下文通过 `{PROPOSAL_EXCERPT}`、`{SPEC_CONTENT}`、`{DESIGN_CONSTRAINTS}` 三个占位符注入 openspec 的 proposal、spec、design 内容，审查子 agent 也是拿 openspec 的 spec 作为"对照什么审查"的基准。这样每个子 agent 都能看到规格约束，而不是凭空写代码。
+#### 2.2.2 参考和开发（V2）
 
-**下游来自 superpowers 的部分**：三个 prompt 模板（implementer、spec-reviewer、quality-reviewer）的结构直接参考了 superpowers 的 `skills/subagent-driven-development/` 下的三个同名模板，包括四种状态码（DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT）、自审检查清单、escalation 机制、fix-then-re-review 循环都保持一致。TDD 也写在实现子 agent 的模板里："Follow TDD: write failing test → run and confirm failure → write minimal code → run and confirm pass → commit"。
+**上游来自 openspec 的部分**：specs 已经按 capability 拆分（每个 `specs/*/spec.md` 对应一个独立功能），superpropose 利用这个现有结构，生成按 capability 分组的 tasks.md。实现子 agent 收到该组的完整 spec.md + proposal + design 作为上下文，审查子 agent 对照同一份 spec 逐条验证。
 
-所以实际融合的方式是：openspec 管"对照什么开发"（spec 作为基线、tasks 作为清单、archive 做持久化），superpowers 管"怎么开发"（子 agent 隔离、TDD 纪律、两轮审查），opsx-superapply 是中间的编排层，把 openspec 的数据喂给 superpowers 式的执行引擎。开发者在使用时，前半段（explore → propose）走 openspec 原有流程生成规格和任务，到执行阶段选择 `/opsx-superapply` 替代原来的 `/opsx-apply`，就能获得子 agent 编排 + TDD + 两轮审查的执行质量，执行完之后再走 openspec 的 `/opsx-archive` 归档。
+**下游来自 superpowers 的部分**：prompt 模板保留了 superpowers 的核心机制——四种状态码（DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT）、自审检查清单、escalation、fix-then-re-review 循环、TDD 纪律。
+
+**V2 的融合方式**：
+- openspec 管"做什么"（proposal/design/specs 定义需求和约束）
+- superpropose 管"怎么拆"（按 capability 分组 tasks，确定并行策略）
+- superapply 管"怎么做"（按组并行派发 + TDD + spec-review + 集成审查）
+- openspec archive 管"怎么收"（归档持久化）
+
+开发者使用流程：`/opsx-superpropose` → 确认分组和并行策略 → `/opsx-superapply` → `/opsx-archive`
 
 #### 2.2.3 /opsx-superapply源码
 
@@ -332,7 +347,16 @@ opsx-superapply/
 
 #### opsx-superapply 和原来的 opsx-apply 区别？
 
- /opsx-apply 是单 agent 逐条执行任务，/opsx-superapply 是每个任务派独立子 agent + 两轮审查。前者简单快，后者质量高但耗 token 多。子agent审查很费token，每个任务至少三次子 agent 调用（实现+规格审查+质量审查），审查不通过还要循环。
+| | /opsx-apply（原生） | /opsx-superapply（V2） |
+|---|---|---|
+| 提案 | /opsx-propose（flat tasks） | /opsx-superpropose（grouped tasks） |
+| 执行方式 | 单 agent 逐条串行 | 多 agent 按 capability 组并行 |
+| 审查 | 无独立审查 | 每组 spec-review + 最终集成 review |
+| token 消耗 | 低 | 中（每组1次review，非每条3次） |
+| 适用场景 | 任务少、想交互式开发 | 任务多、想自主跑完+质量保证 |
+| 上下文 | agent 有完整会话记忆 | 每组子agent有完整spec+组内上下文 |
+
+配套使用：superpropose + superapply 是一对，不和原生 propose/apply 混用。归档仍用原生 /opsx-archive。
 
 #### 怎么写自己的 skill / agent 编排？有框架或语言要求吗？
 
